@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>Nebula Risk - Hackathon Demo</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Courier New', Courier, monospace; }
+        
+        /* UI OVERLAY */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; /* Let clicks pass through to 3D if needed, but we use hand tracking */
+            display: flex; flex-direction: column; justify-content: space-between; padding: 20px; box-sizing: border-box;
+        }
+
+        .hud-top {
+            display: flex; justify-content: space-between; color: #00ffcc; text-shadow: 0 0 10px #00ffcc;
+            font-size: 24px; font-weight: bold; z-index: 20;
+        }
+
+        .hud-center {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            text-align: center; width: 100%;
+        }
+
+        .status-msg {
+            color: #fff; font-size: 32px; letter-spacing: 4px; text-transform: uppercase;
+            text-shadow: 0 0 20px rgba(255,255,255,0.5); margin-bottom: 20px;
+        }
+
+        /* Virtual Buttons controlled by Hand */
+        .hand-btn {
+            display: inline-block; border: 2px solid #fff; padding: 15px 40px; margin: 10px;
+            color: #fff; font-size: 20px; background: rgba(0,0,0,0.5); transition: 0.3s;
+            opacity: 0.6; border-radius: 8px;
+        }
+        .hand-btn.active {
+            background: #00ffcc; color: #000; box-shadow: 0 0 30px #00ffcc; transform: scale(1.1); opacity: 1;
+        }
+        .hand-btn.danger {
+            border-color: #ff0055;
+        }
+        .hand-btn.danger.active {
+            background: #ff0055; box-shadow: 0 0 30px #ff0055;
+        }
+
+        #video-container {
+            position: absolute; bottom: 20px; right: 20px; width: 160px; opacity: 0.3; border: 1px solid #333;
+            transform: scaleX(-1); z-index: 10;
+        }
+        video { width: 100%; }
+
+        /* Progress Bar */
+        #progress-container {
+            width: 300px; height: 10px; border: 1px solid #555; margin: 0 auto; display: none;
+        }
+        #progress-fill {
+            width: 0%; height: 100%; background: #00ffcc; box-shadow: 0 0 15px #00ffcc;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="hud-top">
+        <div id="score-display">BANK: 0 pkt</div>
+        <div id="level-display">POZIOM: 1 | Mnożnik: x1.5</div>
+    </div>
+
+    <div class="hud-center">
+        <div id="game-message" class="status-msg">NEBULA RISK</div>
+        
+        <div id="btn-start" class="hand-btn">ROZPOCZNIJ (Synteza)</div>
+        
+        <div id="decision-panel" style="display:none;">
+            <div id="btn-cashout" class="hand-btn">WYPŁAĆ (Bezpiecznie)</div>
+            <div id="btn-risk" class="hand-btn danger">RYZYKUJ (Poziom Wyżej)</div>
+        </div>
+
+        <div id="progress-container"><div id="progress-fill"></div></div>
+    </div>
+</div>
+
+<div id="video-container">
+    <video id="webcam" playsinline></video>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+    // --- KONFIGURACJA GRY ---
+    const GAME_CONFIG = {
+        maxLevel: 7,
+        basePoints: 100,
+        winChance: [0.95, 0.85, 0.75, 0.60, 0.50, 0.40, 0.30] // Malejąca szansa
+    };
+
+    let gameState = {
+        level: 1,
+        bank: 0,
+        currentPot: 100,
+        status: 'IDLE', // IDLE, CHARGING, RESULT, DECISION, GAMEOVER
+        chargeProgress: 0
+    };
+
+    // --- 1. THREE.JS SETUP ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 60;
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Particles
+    const particleCount = 8000;
+    const geometry = new THREE.BufferGeometry();
+    const positions = [];
+    const velocities = [];
+    const colors = [];
+    const originalColors = [];
+
+    const colorBlue = new THREE.Color(0x00ffff);
+    const colorPurple = new THREE.Color(0xff00ff);
+    const colorGold = new THREE.Color(0xffaa00);
+    const colorBlack = new THREE.Color(0x220033);
+
+    for (let i = 0; i < particleCount; i++) {
+        const x = (Math.random() - 0.5) * 200;
+        const y = (Math.random() - 0.5) * 120;
+        const z = (Math.random() - 0.5) * 100;
+        positions.push(x, y, z);
+        velocities.push(0, 0, 0);
+        
+        // Initial Colors (Nebula style)
+        const c = Math.random() > 0.5 ? colorBlue : colorPurple;
+        colors.push(c.r, c.g, c.b);
+        originalColors.push(c.r, c.g, c.b);
+    }
+
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+    const material = new THREE.PointsMaterial({ size: 0.6, vertexColors: true, blending: THREE.AdditiveBlending, transparent: true });
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    // Hand Cursor (Visual)
+    const cursor = new THREE.Mesh(new THREE.RingGeometry(1.5, 2, 32), new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide }));
+    scene.add(cursor);
+    let handPos = new THREE.Vector3(0,0,0);
+    let isHandPresent = false;
+
+    // --- 2. GAME LOGIC & UI INTERACTION ---
+    
+    // Prosta detekcja kolizji kursora z elementami DOM
+    function checkButtonHover(btnId) {
+        if (!isHandPresent) return false;
+        const btn = document.getElementById(btnId);
+        if (btn.style.display === 'none') return false;
+
+        const rect = btn.getBoundingClientRect();
+        // Konwersja pozycji 3D handPos na 2D ekranu
+        const screenPos = handPos.clone().project(camera);
+        const x = (screenPos.x * .5 + .5) * window.innerWidth;
+        const y = (-(screenPos.y * .5) + .5) * window.innerHeight;
+
+        // Sprawdź czy kursor jest nad przyciskiem
+        if (x > rect.left && x < rect.right && y > rect.top && y < rect.bottom) {
+            btn.classList.add('active');
+            return true;
+        } else {
+            btn.classList.remove('active');
+            return false;
+        }
+    }
+
+    // --- 3. ANIMATION LOOP ---
+    let hoverTimer = 0;
+
+    function updateParticles() {
+        const posAttr = particles.geometry.attributes.position;
+        const colAttr = particles.geometry.attributes.color;
+        const p = posAttr.array;
+        const c = colAttr.array;
+
+        // Center point (where stars form)
+        const centerX = 0, centerY = 0, centerZ = 0;
+
+        for (let i = 0; i < particleCount; i++) {
+            let ix = i * 3;
+            
+            // Physics Logic based on State
+            if (gameState.status === 'CHARGING') {
+                // Attraction to Center (Gravity Well)
+                const dx = centerX - p[ix];
+                const dy = centerY - p[ix+1];
+                const dz = centerZ - p[ix+2];
+                const dist = Math.sqrt(dx*dx + dy*dy + dz*dz);
+                
+                // Spiral effect
+                p[ix] += dx * 0.02 + (Math.random()-0.5);
+                p[ix+1] += dy * 0.02 + (Math.random()-0.5);
+                p[ix+2] += dz * 0.02;
+                
+                // Color shift to White/Hot
+                c[ix] = 1; c[ix+1] = 1; c[ix+2] = 1;
+
+            } else if (gameState.status === 'WIN_EXPLOSION') {
+                // Gold Supernova
+                const dx = p[ix] - centerX;
+                const dy = p[ix+1] - centerY;
+                const dz = p[ix+2] - centerZ;
+                const angle = Math.atan2(dy, dx);
+                
+                p[ix] += Math.cos(angle) * 2;
+                p[ix+1] += Math.sin(angle) * 2;
+                
+                c[ix] = colorGold.r; c[ix+1] = colorGold.g; c[ix+2] = colorGold.b;
+
+            } else if (gameState.status === 'LOSS_IMPLOSION') {
+                // Black Hole Collapse
+                const dx = centerX - p[ix];
+                const dy = centerY - p[ix+1];
+                const dz = centerZ - p[ix+2];
+                
+                p[ix] += dx * 0.1;
+                p[ix+1] += dy * 0.1;
+                p[ix+2] += dz * 0.1;
+
+                c[ix] = colorBlack.r; c[ix+1] = colorBlack.g; c[ix+2] = colorBlack.b;
+
+            } else {
+                // IDLE / Floating
+                p[ix] += (Math.random() - 0.5) * 0.2;
+                p[ix+1] += (Math.random() - 0.5) * 0.2;
+                
+                // Return to original colors slowly
+                // c[ix] = originalColors[i*3]; ... (simplified)
+            }
+        }
+        posAttr.needsUpdate = true;
+        colAttr.needsUpdate = true;
+    }
+
+    function gameLoop() {
+        requestAnimationFrame(gameLoop);
+        updateParticles();
+        renderer.render(scene, camera);
+
+        // --- GAME LOGIC CONTROL ---
+        
+        // 1. START BUTTON LOGIC
+        if (gameState.status === 'IDLE' || gameState.status === 'GAMEOVER') {
+            if (checkButtonHover('btn-start')) {
+                hoverTimer++;
+                document.getElementById('progress-container').style.display = 'block';
+                document.getElementById('progress-fill').style.width = (hoverTimer) + '%';
+                
+                if (hoverTimer > 60) { // ok 1 sekunda holda
+                    startGame();
+                }
+            } else {
+                hoverTimer = 0;
+                document.getElementById('progress-fill').style.width = '0%';
+            }
+        }
+
+        // 2. CHARGING LOGIC (Hand must be present)
+        if (gameState.status === 'CHARGING') {
+            if (isHandPresent) {
+                gameState.chargeProgress += 0.5; // Charge speed
+                document.getElementById('game-message').innerText = "SYNTEZA GWIAZDY... " + Math.floor(gameState.chargeProgress) + "%";
+                
+                if (gameState.chargeProgress >= 100) {
+                    resolveResult();
+                }
+            } else {
+                document.getElementById('game-message').innerText = "WRÓĆ RĘKĄ!";
+            }
+        }
+
+        // 3. DECISION LOGIC
+        if (gameState.status === 'DECISION') {
+            if (checkButtonHover('btn-risk')) {
+                hoverTimer++;
+                if (hoverTimer > 50) nextLevel();
+            } else if (checkButtonHover('btn-cashout')) {
+                hoverTimer++;
+                if (hoverTimer > 50) cashOut();
+            } else {
+                hoverTimer = 0;
+            }
+        }
+    }
+
+    // --- GAME FUNCTIONS ---
+
+    function startGame() {
+        hoverTimer = 0;
+        gameState.level = 1;
+        gameState.currentPot = GAME_CONFIG.basePoints;
+        gameState.status = 'CHARGING';
+        gameState.chargeProgress = 0;
+        
+        document.getElementById('btn-start').style.display = 'none';
+        document.getElementById('decision-panel').style.display = 'none';
+        document.getElementById('progress-container').style.display = 'none';
+        updateUI();
+    }
+
+    function nextLevel() {
+        gameState.level++;
+        gameState.currentPot = Math.floor(gameState.currentPot * 1.5); // Multiplier
+        gameState.status = 'CHARGING';
+        gameState.chargeProgress = 0;
+        hoverTimer = 0;
+        
+        document.getElementById('decision-panel').style.display = 'none';
+        
+        // Reset particles slightly
+        const p = particles.geometry.attributes.position.array;
+        for(let i=0; i<particleCount*3; i++) {
+             p[i] = (Math.random() - 0.5) * 100; // Scatter for new charging
+        }
+        
+        updateUI();
+    }
+
+    function resolveResult() {
+        // RNG MOMENT
+        const chance = GAME_CONFIG.winChance[gameState.level - 1];
+        const roll = Math.random();
+        
+        if (roll < chance) {
+            // WIN
+            gameState.status = 'WIN_EXPLOSION';
+            document.getElementById('game-message').innerText = "SUKCES! GWIAZDA STABILNA";
+            document.getElementById('game-message').style.color = "#ffaa00";
+            
+            setTimeout(() => {
+                if(gameState.level === GAME_CONFIG.maxLevel) {
+                    endGame(true);
+                } else {
+                    gameState.status = 'DECISION';
+                    document.getElementById('decision-panel').style.display = 'block';
+                    document.getElementById('game-message').innerText = "DECYZJA: RYZYKO CZY ZYSK?";
+                    document.getElementById('game-message').style.color = "#fff";
+                }
+            }, 2000); // 2 seconds of explosion
+        } else {
+            // LOSS
+            gameState.status = 'LOSS_IMPLOSION';
+            document.getElementById('game-message').innerText = "KRYTYCZNY BŁĄD! CZARNA DZIURA!";
+            document.getElementById('game-message').style.color = "#ff0055";
+            setTimeout(() => { endGame(false); }, 3000);
+        }
+    }
+
+    function cashOut() {
+        gameState.bank += gameState.currentPot;
+        endGame(true);
+    }
+
+    function endGame(win) {
+        gameState.status = 'GAMEOVER';
+        document.getElementById('decision-panel').style.display = 'none';
+        document.getElementById('btn-start').style.display = 'inline-block';
+        document.getElementById('btn-start').innerText = "ZAGRAJ PONOWNIE";
+        
+        if (win) {
+            document.getElementById('game-message').innerText = `WYGRANA: ${gameState.currentPot} PKT!`;
+        } else {
+            document.getElementById('game-message').innerText = "STRACIŁEŚ WSZYSTKO...";
+            gameState.currentPot = 0;
+        }
+        updateUI();
+    }
+
+    function updateUI() {
+        document.getElementById('score-display').innerText = `BANK: ${gameState.bank}`;
+        document.getElementById('level-display').innerText = `POZIOM: ${gameState.level} / 7 | SZANSA: ${Math.floor(GAME_CONFIG.winChance[gameState.level-1]*100)}%`;
+    }
+
+
+    // --- 4. WEBCAM & MEDIAPIPE ---
+    const videoElement = document.getElementById('webcam');
+    
+    function onResults(results) {
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            isHandPresent = true;
+            const hand = results.multiHandLandmarks[0];
+            const indexFinger = hand[8]; 
+            
+            // Map to 3D
+            const x = (1 - indexFinger.x) * 2 - 1; 
+            const y = -(indexFinger.y * 2 - 1);
+            
+            const targetPos = new THREE.Vector3(x * 60, y * 35, 0);
+            handPos.lerp(targetPos, 0.5);
+            cursor.position.copy(handPos);
+            
+        } else {
+            isHandPresent = false;
+        }
+    }
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => { await hands.send({image: videoElement}); },
+        width: 640, height: 480
+    });
+    cameraUtils.start();
+
+    gameLoop();
+
+    // Resize handler
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+</script>
+</body>
+</html>
