@@ -224,14 +224,7 @@ Kod udostępniony jako demo/prototyp.
 
 ---
 
-## 🤝 Kontakt
-
-- **Mentor**: Krzysztof Śliwiński (Totalizator Sportowy)
-- **Repo**: [github.com/LachPawel/nebula-risk](https://github.com/LachPawel/nebula-risk)
-
----
-
 ## 🎬 Demo Video
 
-[Link do wideo prezentującego rozgrywkę i mechanikę gry]()
+[Link do wideo prezentującego rozgrywkę i mechanikę gry](https://youtu.be/G2P39kekYyE)
 
