@@ -1,6 +1,6 @@
 # 🌌 NEBULA RISK
 
-**Gra losowa oparta na umiejętnościach i szczęściu | HackNation 2024**
+**Gra losowa oparta na umiejętnościach i szczęściu | HackNation 2025**
 
 ---
 
